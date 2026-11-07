@@ -416,7 +416,8 @@ function openBook(book, isNew = false) {
   $('#grp-wishlist').hidden = !wish;
 
   const img = $('#f-cover-img');
-  pendingCover = null;
+  pendingCover = null; photoRun++; ocrBusy = false;
+  $('#btn-photo').disabled = false;
   $('#ocr-box').hidden = true; $('#ocr-lines').innerHTML = ''; $('#ocr-status').textContent = '';
   if (book.cover && book.cover.startsWith('idb:')) {
     img.hidden = true;
@@ -827,29 +828,167 @@ $('#ocr-lines').addEventListener('click', e => {
   else $('#f-authors').value = t;
 });
 
-$('#btn-photo').addEventListener('click', () => $('#f-photo').click());
+/* ---- Editor foto: ruota, raddrizza e ritaglia ---- */
+const cropDlg = $('#dlg-crop'), cropCanvas = $('#crop-canvas'), cropBox = $('#crop-box');
+const CROP_DEFAULT = { x0: 0.05, y0: 0.05, x1: 0.95, y1: 0.95 };
+let cropState = null;
+
+function drawWork() {
+  const { img, rot, angle } = cropState;
+  const swap = rot % 180 !== 0;
+  const bw = swap ? img.height : img.width, bh = swap ? img.width : img.height;
+  const k = Math.min(1, 1600 / Math.max(bw, bh));
+  cropCanvas.width = Math.round(bw * k); cropCanvas.height = Math.round(bh * k);
+  const ctx = cropCanvas.getContext('2d');
+  ctx.fillStyle = '#555'; ctx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
+  ctx.save();
+  ctx.translate(cropCanvas.width / 2, cropCanvas.height / 2);
+  ctx.rotate((rot + angle) * Math.PI / 180);
+  ctx.drawImage(img, -img.width * k / 2, -img.height * k / 2, img.width * k, img.height * k);
+  ctx.restore();
+}
+function updateBox() {
+  const c = cropState.crop;
+  cropBox.style.left = c.x0 * 100 + '%'; cropBox.style.top = c.y0 * 100 + '%';
+  cropBox.style.width = (c.x1 - c.x0) * 100 + '%'; cropBox.style.height = (c.y1 - c.y0) * 100 + '%';
+}
+
+/** Cerca il rettangolo occupato dal libro: tutto ciò che differisce dal colore del fondo lungo i bordi. */
+function detectBookRect() {
+  const W = 200, k = W / Math.max(cropCanvas.width, cropCanvas.height);
+  const w = Math.max(8, Math.round(cropCanvas.width * k)), h = Math.max(8, Math.round(cropCanvas.height * k));
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const cx = c.getContext('2d'); cx.drawImage(cropCanvas, 0, 0, w, h);
+  const d = cx.getImageData(0, 0, w, h).data;
+  const px = (x, y) => { const i = (y * w + x) * 4; return [d[i], d[i + 1], d[i + 2]]; };
+  const ring = [];
+  for (let x = 0; x < w; x++) { ring.push(px(x, 0), px(x, 1), px(x, h - 1), px(x, h - 2)); }
+  for (let y = 0; y < h; y++) { ring.push(px(0, y), px(1, y), px(w - 1, y), px(w - 2, y)); }
+  const med = (ch) => { const v = ring.map(p => p[ch]).sort((a, b) => a - b); return v[v.length >> 1]; };
+  const bg = [med(0), med(1), med(2)];
+  const diff = (p) => Math.abs(p[0] - bg[0]) + Math.abs(p[1] - bg[1]) + Math.abs(p[2] - bg[2]);
+  const rows = new Array(h).fill(0), cols = new Array(w).fill(0);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (diff(px(x, y)) > 70) { rows[y]++; cols[x]++; }
+  const first = (arr, need) => arr.findIndex(v => v >= need);
+  const last = (arr, need) => { for (let i = arr.length - 1; i >= 0; i--) if (arr[i] >= need) return i; return -1; };
+  const y0 = first(rows, w * 0.05), y1 = last(rows, w * 0.05), x0 = first(cols, h * 0.05), x1 = last(cols, h * 0.05);
+  if (y0 < 0 || x0 < 0 || y1 <= y0 || x1 <= x0) return null;
+  const r = { x0: Math.max(0, x0 / w - 0.01), y0: Math.max(0, y0 / h - 0.01), x1: Math.min(1, (x1 + 1) / w + 0.01), y1: Math.min(1, (y1 + 1) / h + 0.01) };
+  const area = (r.x1 - r.x0) * (r.y1 - r.y0);
+  return area < 0.2 || area > 0.97 ? null : r;
+}
+
+let cropDone = null;
+function editPhoto(img) {
+  return new Promise(resolve => {
+    cropState = { img, rot: 0, angle: 0, crop: { ...CROP_DEFAULT } };
+    $('#crop-angle').value = '0';
+    drawWork(); updateBox();
+    const auto = detectBookRect();
+    if (auto) { cropState.crop = auto; updateBox(); }
+    cropDone = (result) => { cropDone = null; if (cropDlg.open) cropDlg.close(); resolve(result); };
+    cropDlg.showModal();
+  });
+}
+function finishCrop(useCrop) {
+  const full = { x0: 0, y0: 0, x1: 1, y1: 1 };
+  const c = useCrop ? cropState.crop : full;
+  const sx = Math.round(c.x0 * cropCanvas.width), sy = Math.round(c.y0 * cropCanvas.height);
+  const sw = Math.max(8, Math.round((c.x1 - c.x0) * cropCanvas.width)), sh = Math.max(8, Math.round((c.y1 - c.y0) * cropCanvas.height));
+  const out = document.createElement('canvas'); out.width = sw; out.height = sh;
+  out.getContext('2d').drawImage(cropCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+  cropDone && cropDone(out);
+}
+$('#crop-ok').addEventListener('click', () => finishCrop(true));
+$('#crop-skip').addEventListener('click', () => finishCrop(false));
+$('#crop-close').addEventListener('click', () => cropDone && cropDone(null));
+cropDlg.addEventListener('cancel', e => { e.preventDefault(); cropDone && cropDone(null); });
+$('#rot-l').addEventListener('click', () => { cropState.rot = (cropState.rot + 270) % 360; cropState.crop = { ...CROP_DEFAULT }; drawWork(); updateBox(); });
+$('#rot-r').addEventListener('click', () => { cropState.rot = (cropState.rot + 90) % 360; cropState.crop = { ...CROP_DEFAULT }; drawWork(); updateBox(); });
+$('#crop-angle').addEventListener('input', e => { cropState.angle = +e.target.value; drawWork(); });
+$('#crop-auto').addEventListener('click', () => {
+  const r = detectBookRect();
+  if (r) { cropState.crop = r; updateBox(); } else toast('Non riesco a trovare i bordi: trascina gli angoli a mano');
+});
+
+let drag = null;
+$('#crop-stage').addEventListener('pointerdown', e => {
+  const t = e.target;
+  const mode = t.dataset && t.dataset.h ? t.dataset.h : (t === cropBox ? 'move' : null);
+  if (!mode) return;
+  drag = { mode, sx: e.clientX, sy: e.clientY, start: { ...cropState.crop }, r: cropCanvas.getBoundingClientRect() };
+  e.currentTarget.setPointerCapture(e.pointerId);
+  e.preventDefault();
+});
+$('#crop-stage').addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = (e.clientX - drag.sx) / drag.r.width, dy = (e.clientY - drag.sy) / drag.r.height;
+  const s = drag.start, MIN = 0.1;
+  let { x0, y0, x1, y1 } = s;
+  const cl = (v) => Math.min(1, Math.max(0, v));
+  if (drag.mode === 'move') {
+    const w = s.x1 - s.x0, h = s.y1 - s.y0;
+    x0 = Math.min(1 - w, Math.max(0, s.x0 + dx)); y0 = Math.min(1 - h, Math.max(0, s.y0 + dy));
+    x1 = x0 + w; y1 = y0 + h;
+  } else {
+    if (drag.mode.includes('w')) x0 = Math.min(cl(s.x0 + dx), s.x1 - MIN);
+    if (drag.mode.includes('e')) x1 = Math.max(cl(s.x1 + dx), s.x0 + MIN);
+    if (drag.mode.includes('n')) y0 = Math.min(cl(s.y0 + dy), s.y1 - MIN);
+    if (drag.mode.includes('s')) y1 = Math.max(cl(s.y1 + dy), s.y0 + MIN);
+  }
+  cropState.crop = { x0, y0, x1, y1 };
+  updateBox();
+});
+['pointerup', 'pointercancel'].forEach(ev => $('#crop-stage').addEventListener(ev, () => { drag = null; }));
+
+/* ---- Scatto, ritaglio e lettura ---- */
+let photoRun = 0;            // identifica l'ultima foto: una lettura vecchia non scrive mai nella scheda di un altro libro
+const withTimeout = (p, ms, label) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(label)), ms))]);
+
+$('#btn-photo').addEventListener('click', () => {
+  $('#ocr-status').textContent = 'Apro la fotocamera…';
+  $('#f-photo').click();
+});
 $('#f-photo').addEventListener('change', async e => {
   const file = e.target.files[0]; e.target.value = '';
-  if (!file || !editing) return;
-  const status = (t) => { $('#ocr-status').textContent = t; };
+  if (!file || !editing) { $('#ocr-status').textContent = ''; return; }
+  const run = ++photoRun, target = editing.book;
+  const stale = () => run !== photoRun || !editing || editing.book !== target;
+  const status = (t) => { if (!stale()) $('#ocr-status').textContent = t; };
   ocrBusy = true;
-  $('#btn-photo').disabled = true;
   try {
     status('Preparo la foto…');
     const img = await loadImage(file);
-    // miniatura da conservare come copertina
-    const thumb = await canvasBlob(drawScaled(img, 480), 0.82);
+    if (stale()) return;
+    status('Ruota e ritaglia la foto');
+    const edited = await editPhoto(img);
+    if (stale()) return;
+    if (!edited) { status('Foto annullata.'); return; }
+
+    const thumb = await canvasBlob(drawScaled(edited, 480), 0.82);
+    if (stale()) return;
     pendingCover = thumb;
     const prev = $('#f-cover-img');
     prev.src = URL.createObjectURL(thumb); prev.hidden = false;
 
-    const worker = await getOcr(status);
-    status('Leggo il testo…');
-    const { data } = await worker.recognize(drawScaled(img, 1600), {}, { text: false, blocks: true, hocr: false, tsv: false });
-    const raw = [];
-    (data.blocks || []).forEach(b => b.paragraphs.forEach(p => p.lines.forEach(l =>
-      raw.push({ text: l.text || '', conf: l.confidence, h: l.bbox.y1 - l.bbox.y0, y: l.bbox.y0 }))));
-    const sug = suggestFromLines(raw);
+    let sug;
+    try {
+      const worker = await withTimeout(getOcr(status), 180000, 'download');
+      status('Leggo il testo…');
+      const { data } = await withTimeout(worker.recognize(drawScaled(edited, 1600), {}, { text: false, blocks: true, hocr: false, tsv: false }), 120000, 'lettura');
+      const raw = [];
+      (data.blocks || []).forEach(b => b.paragraphs.forEach(p => p.lines.forEach(l =>
+        raw.push({ text: l.text || '', conf: l.confidence, h: l.bbox.y1 - l.bbox.y0, y: l.bbox.y0 }))));
+      sug = suggestFromLines(raw);
+    } catch (err) {
+      // lettura bloccata o rete assente: chiudo il lettore, così il prossimo tentativo riparte pulito
+      if (ocrWorker) { ocrWorker.terminate().catch(() => {}); ocrWorker = null; }
+      status(navigator.onLine === false
+        ? 'Foto salvata come copertina. Per leggere il testo serve la connessione la prima volta.'
+        : 'Foto salvata come copertina, ma la lettura del testo non è riuscita. Compila a mano.');
+      return;
+    }
+    if (stale()) return;
     renderOcrLines(sug.lines);
     if (!sug.lines.length) { status('Foto salvata come copertina, ma non ho letto testo. Riprova con più luce, inquadrando solo la copertina.'); return; }
     const filled = [];
@@ -859,12 +998,9 @@ $('#f-photo').addEventListener('change', async e => {
       ? `Proposti ${filled.join(' e ')}: controlla e correggi toccando le righe lette.`
       : 'Titolo e autore erano già compilati: tocca una riga letta per sostituirli.');
   } catch (err) {
-    status(navigator.onLine === false
-      ? 'Foto salvata come copertina. Per leggere il testo serve la connessione la prima volta.'
-      : 'Foto salvata come copertina, ma la lettura del testo non è riuscita. Compila a mano.');
+    status('Non riesco a leggere questa foto. Riprova.');
   } finally {
-    ocrBusy = false;
-    $('#btn-photo').disabled = false;
+    if (run === photoRun) ocrBusy = false;
   }
 });
 
