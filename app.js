@@ -17,6 +17,16 @@ function migrate(list, from) {
   for (let v = from + 1; v <= SCHEMA; v++) if (MIGRATIONS[v]) list = MIGRATIONS[v](list);
   return list;
 }
+/* Impostazioni del dispositivo (non fanno parte dei dati dei libri né dei backup) */
+const SETTINGS_KEY = 'biblioteca.settings';
+function readSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (e) { return {}; }
+}
+function writeSettings(patch) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(Object.assign(readSettings(), patch))); } catch (e) {}
+}
+const gKey = () => { const k = (readSettings().googleKey || '').trim(); return k ? '&key=' + encodeURIComponent(k) : ''; };
+
 function readMeta() {
   try { return JSON.parse(localStorage.getItem(META_KEY)) || {}; } catch (e) { return {}; }
 }
@@ -112,18 +122,22 @@ function mapGoogle(v, isbn) {
   };
 }
 
-async function fetchJson(url) {
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function fetchJson(url, retry = 0) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 10000);
   try {
     const r = await fetch(url, { signal: ctl.signal });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (r.status === 429 && retry < 1) { clearTimeout(t); await sleep(1500); return fetchJson(url, retry + 1); }
+    if (!r.ok) { const e = new Error('HTTP ' + r.status); e.status = r.status; throw e; }
     return await r.json();
   } finally { clearTimeout(t); }
 }
 
 function errText(e) {
   if (e && e.name === 'AbortError') return 'tempo scaduto';
+  if (e && e.status === 429) return 'troppe richieste (429)';
+  if (e && e.status === 403) return 'chiave non valida o non autorizzata (403)';
   return (e && e.message) || 'errore di rete';
 }
 
@@ -136,14 +150,13 @@ async function lookupIsbn(isbn) {
 
   // 1) Google Books: prima con isbn:, poi come testo libero (accetto solo risultati con lo stesso ISBN)
   let book = await attempt('Google Books', async () => {
-    for (const q of ['isbn:' + isbn, isbn]) {
-      const d = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=5`);
-      const items = d.items || [];
-      const same = items.find(v => ((v.volumeInfo || {}).industryIdentifiers || []).some(i => i.identifier === isbn || (i.type === 'ISBN_10' && isbn10to13(i.identifier) === isbn)));
-      if (same) return mapGoogle(same, isbn);
-      if (q.startsWith('isbn:') && items.length === 1) return mapGoogle(items[0], isbn);
-    }
-    return null;
+    const matches = (v) => ((v.volumeInfo || {}).industryIdentifiers || []).some(i => i.identifier === isbn || (i.type === 'ISBN_10' && isbn10to13(i.identifier) === isbn));
+    const query = async (q) => (await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=5${gKey()}`)).items || [];
+    let items = await query('isbn:' + isbn);
+    if (items.length) return mapGoogle(items.find(matches) || items[0], isbn);
+    items = await query(isbn);                       // solo se la prima ricerca non ha dato nulla
+    const same = items.find(matches);
+    return same ? mapGoogle(same, isbn) : null;
   });
   if (book) return { book, errors };
 
@@ -183,7 +196,7 @@ async function lookupIsbn(isbn) {
 }
 
 async function searchTitle(q) {
-  const d = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10&printType=books`);
+  const d = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=10&printType=books${gKey()}`);
   return (d.items || []).map(v => mapGoogle(v)).filter(b => b.title);
 }
 
@@ -443,8 +456,9 @@ async function handleIsbn(isbn) {
   setMsg('Cerco i dettagli…');
   const { book, errors } = await lookupIsbn(isbn);
   if (book) { setMsg('Libro trovato'); openBook(newBook(book), true); return; }
+  const limited = errors.some(e => /429|403/.test(e));
   const note = errors.length
-    ? 'Servizio non raggiungibile (' + errors.join('; ') + '). Controlla la connessione, oppure compila a mano.'
+    ? 'Servizio non raggiungibile (' + errors.join('; ') + ').' + (limited ? ' Aggiungi una chiave API di Google Books dal menu in alto a destra, oppure riprova più tardi.' : ' Controlla la connessione.') + ' Intanto puoi compilare a mano.'
     : 'ISBN ' + isbn + ' non presente nelle banche dati: compila a mano.';
   setMsg(errors.length ? 'Servizio non raggiungibile' : 'ISBN non trovato');
   openBook(newBook({ isbn }), true);
@@ -473,7 +487,7 @@ $('#form-title').addEventListener('submit', async e => {
       ? res.map((b, i) => `<li><button class="card" data-i="${i}">${coverHtml(b)}<span class="meta"><span class="t">${esc(b.title)}</span><span class="a">${esc(b.authors.join(', '))}</span><span class="s">${esc([b.publisher, b.year].filter(Boolean).join(' · '))}</span></span></button></li>`).join('')
       : '<li class="empty">Nessun risultato.</li>';
   } catch (err) {
-    ul.innerHTML = '<li class="empty">Ricerca non riuscita. Controlla la connessione e riprova.</li>';
+    ul.innerHTML = `<li class="empty">Ricerca non riuscita (${esc(errText(err))}). ${err && (err.status === 429 || err.status === 403) ? 'Aggiungi una chiave API di Google Books dal menu in alto a destra.' : 'Controlla la connessione e riprova.'}</li>`;
   }
 });
 $('#results').addEventListener('click', e => {
@@ -603,8 +617,13 @@ $('#btn-menu').addEventListener('click', () => {
     ['Spesa prevista', sum ? sum.toFixed(2).replace('.', ',') + ' €' : '—']
   ];
   rows.push(['Versione app', APP_VERSION]);
+  $('#f-gkey').value = readSettings().googleKey || '';
   $('#stats').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
   dlgMenu.showModal();
+});
+$('#f-gkey').addEventListener('change', () => {
+  writeSettings({ googleKey: $('#f-gkey').value.trim() });
+  toast($('#f-gkey').value.trim() ? 'Chiave salvata' : 'Chiave rimossa');
 });
 $('#menu-close').addEventListener('click', () => dlgMenu.close());
 

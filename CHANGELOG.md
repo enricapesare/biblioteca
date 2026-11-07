@@ -4,6 +4,12 @@ Formato basato su [Keep a Changelog](https://keepachangelog.com/it/1.1.0/), vers
 
 ## [Non rilasciato]
 
+## [1.1.0] - 2026-11-07
+### Aggiunto
+- Campo per una chiave API di Google Books nel menu, per evitare il blocco 429 delle richieste anonime.
+### Modificato
+- Meno richieste per ogni ricerca ISBN, un nuovo tentativo automatico in caso di 429 e messaggi di errore più chiari.
+
 ## [1.0.1] - 2026-11-07
 ### Corretto
 - Ricerca dettagli per ISBN: ricerca più tollerante su Google Books (anche come testo libero), ricerca aggiuntiva su Open Library e messaggio che spiega se il servizio non risponde o se l'ISBN non esiste.
