@@ -4,6 +4,10 @@ Formato basato su [Keep a Changelog](https://keepachangelog.com/it/1.1.0/), vers
 
 ## [Non rilasciato]
 
+## [1.2.1] - 2026-11-07
+### Corretto
+- Collane: alla scansione di una nuova uscita non vengono più riportati titolo e autori dell'uscita precedente, ma solo collana, editore e generi.
+
 ## [1.2.0] - 2026-11-07
 ### Aggiunto
 - Collane e periodici: riconoscimento dei codici a barre 977… (ISSN), campi Collana, Numero e ISSN, ordinamento per collana.

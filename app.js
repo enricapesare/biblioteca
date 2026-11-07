@@ -507,20 +507,20 @@ async function handleIsbn(isbn) {
 /** Collane e periodici: non esistono schede online, si riporta quanto già inserito per la stessa collana. */
 function handleSerial({ issn }) {
   const same = books.filter(b => b.issn === issn).sort((a, b) => b.addedAt - a.addedAt);
-  const prev = same[0];
+  const named = same.find(b => b.collana) || same[0];
   const data = { issn };
-  if (prev) {
-    const name = prev.collana || prev.title;
-    Object.assign(data, { title: name, collana: name, publisher: prev.publisher, authors: prev.authors || [], categories: prev.categories || [] });
+  if (named) {
+    // Titolo, autori e anno cambiano a ogni uscita: si riportano solo i dati comuni alla collana
+    Object.assign(data, { collana: named.collana || '', publisher: named.publisher || '', categories: named.categories || [] });
   }
   setMsg('Collana o periodico (ISSN ' + issn + ')');
   openBook(newBook(data), true);
   const ban = $('#dup-banner');
-  ban.textContent = prev
-    ? `Collana già presente (${same.length} ${same.length === 1 ? 'uscita' : 'uscite'}): ho riportato i dati dell'ultima. Indica il numero dell'uscita.`
-    : `Codice di una collana o periodico (ISSN ${issn}): non ha una scheda online. Compila i dati questa volta, le prossime uscite si compilano da sole.`;
+  ban.textContent = same.length
+    ? `Collana già presente (${same.length} ${same.length === 1 ? 'uscita' : 'uscite'}): ho riportato ${named.collana ? 'collana, ' : ''}editore e generi. Inserisci titolo, autore e numero di questa uscita.${named.collana ? '' : ' Indica anche il nome della collana.'}`
+    : `Codice di una collana o periodico (ISSN ${issn}): non ha una scheda online. Inserisci titolo, autore e numero. Dalla prossima uscita collana, editore e generi si compilano da soli.`;
   ban.hidden = false;
-  const n = prev && parseFloat(prev.numero);
+  const n = named && parseFloat(same[0].numero);
   if (n) $('#f-numero').placeholder = 'es. ' + (n + 1);
 }
 
