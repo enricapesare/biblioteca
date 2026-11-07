@@ -56,6 +56,52 @@ function save() {
 }
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
+/* ---------- Archivio immagini (IndexedDB): foto delle copertine ---------- */
+let _idb;
+function idb() {
+  return _idb || (_idb = new Promise((res, rej) => {
+    const r = indexedDB.open('biblioteca-media', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('media');
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  }));
+}
+async function idbTx(mode, fn) {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const t = db.transaction('media', mode);
+    const req = fn(t.objectStore('media'));
+    t.oncomplete = () => res(req && req.result);
+    t.onerror = () => rej(t.error);
+  });
+}
+const idbPut = (k, v) => idbTx('readwrite', s => s.put(v, k));
+const idbGet = (k) => idbTx('readonly', s => s.get(k));
+const idbDelete = (k) => idbTx('readwrite', s => s.delete(k));
+
+const urlCache = new Map();
+async function coverUrl(id) {
+  if (urlCache.has(id)) return urlCache.get(id);
+  let blob = null;
+  try { blob = await idbGet('cover:' + id); } catch (e) {}
+  if (!blob) return '';
+  const u = URL.createObjectURL(blob);
+  urlCache.set(id, u);
+  return u;
+}
+function dropCoverUrl(id) {
+  if (urlCache.has(id)) { URL.revokeObjectURL(urlCache.get(id)); urlCache.delete(id); }
+}
+function hydrateCovers(root = document) {
+  $$('img[data-idb]', root).forEach(async img => {
+    const u = await coverUrl(img.dataset.idb);
+    if (u) img.src = u;
+    else { const d = document.createElement('div'); d.className = 'cover ph'; img.replaceWith(d); }
+  });
+}
+const blobToDataUrl = (b) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(b); });
+const dataUrlToBlob = async (u) => (await fetch(u)).blob();
+
 /* ---------- Utilità ---------- */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -246,6 +292,7 @@ const filters = { library: 'all', wishlist: 'all' };
 let catFilter = '';
 
 function coverHtml(b) {
+  if (b.cover && b.cover.startsWith('idb:')) return `<img class="cover" data-idb="${esc(b.cover.slice(4))}" alt="">`;
   if (b.cover) return `<img class="cover" src="${esc(b.cover)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=&quot;cover ph&quot;>${esc(b.title).slice(0, 40)}</div>'">`;
   return `<div class="cover ph">${esc(b.title).slice(0, 40)}</div>`;
 }
@@ -298,6 +345,7 @@ function renderList(list) {
   $('#count-' + list).textContent = total
     ? `${items.length} ${items.length === 1 ? 'libro' : 'libri'}${items.length !== total ? ` su ${total}` : ''}`
     : '';
+  setTimeout(() => hydrateCovers($('#list-' + list)), 0);
   $('#list-' + list).innerHTML = items.length
     ? items.map(cardHtml).join('')
     : `<li class="empty">${total ? 'Nessun risultato con questi filtri.' : (list === 'library' ? 'La biblioteca è vuota. Tocca Aggiungi e fotografa il codice a barre di un libro.' : 'Nessun libro in lista. Quando ne vedi uno interessante, scansionalo scegliendo "Da acquistare".')}</li>`;
@@ -368,7 +416,12 @@ function openBook(book, isNew = false) {
   $('#grp-wishlist').hidden = !wish;
 
   const img = $('#f-cover-img');
-  if (book.cover) { img.src = book.cover; img.hidden = false; } else img.hidden = true;
+  pendingCover = null;
+  $('#ocr-box').hidden = true; $('#ocr-lines').innerHTML = ''; $('#ocr-status').textContent = '';
+  if (book.cover && book.cover.startsWith('idb:')) {
+    img.hidden = true;
+    coverUrl(book.cover.slice(4)).then(u => { if (u && editing && editing.book === book) { img.src = u; img.hidden = false; } });
+  } else if (book.cover) { img.src = book.cover; img.hidden = false; } else img.hidden = true;
   $('#desc-box').hidden = !book.description;
   $('#f-desc').textContent = book.description || '';
 
@@ -431,13 +484,20 @@ function commit(b, isNew) {
   save();
 }
 
-$('#form-book').addEventListener('submit', e => {
+$('#form-book').addEventListener('submit', async e => {
   e.preventDefault();
   const { isNew } = editing;
   const b = readForm();
   if (!b.title) { $('#f-title').focus(); return; }
   if (isNew && b.issn && b.numero && books.some(x => x.id !== b.id && x.issn === b.issn && String(x.numero) === String(b.numero)) &&
       !confirm('Questa uscita della collana è già presente. Aggiungerla comunque?')) return;
+  if (pendingCover) {
+    try {
+      await idbPut('cover:' + b.id, pendingCover);
+      dropCoverUrl(b.id);
+      b.cover = 'idb:' + b.id;
+    } catch (err) { toast('Foto non salvata: archivio immagini non disponibile'); }
+  }
   commit(b, isNew);
   dlg.close();
   toast(isNew ? (b.list === 'library' ? 'Aggiunto alla biblioteca' : 'Aggiunto a Da acquistare') : 'Modifiche salvate');
@@ -448,12 +508,14 @@ $('#form-book').addEventListener('submit', e => {
   } else render();
 });
 $('#book-close').addEventListener('click', () => dlg.close());
-dlg.addEventListener('close', () => { editing = null; });
+dlg.addEventListener('close', () => { editing = null; pendingCover = null; });
 
 $('#book-delete').addEventListener('click', () => {
   if (!editing || editing.isNew) return;
   if (!confirm(`Eliminare "${editing.book.title}"?`)) return;
-  books = books.filter(b => b.id !== editing.book.id);
+  const gone = editing.book;
+  books = books.filter(b => b.id !== gone.id);
+  if (gone.cover && gone.cover.startsWith('idb:')) { idbDelete('cover:' + gone.id).catch(() => {}); dropCoverUrl(gone.id); }
   save(); dlg.close(); render(); toast('Libro eliminato');
 });
 $('#book-move').addEventListener('click', () => {
@@ -668,6 +730,144 @@ $('#btn-torch').addEventListener('click', async () => {
 let torchOn = false;
 document.addEventListener('visibilitychange', () => { if (document.hidden && stream) stopScan(); });
 
+/* ---------- Foto della copertina e lettura del testo (OCR sul telefono) ---------- */
+let pendingCover = null;
+const OCR = {
+  ver: '5.1.1',
+  script: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js',
+  worker: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+  core: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1',
+  lang: 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/ita@1.0.0/4.0.0_best_int'
+};
+let ocrWorker = null, ocrBusy = false;
+
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    const el = document.createElement('script');
+    el.src = src; el.onload = res; el.onerror = () => rej(new Error('script'));
+    document.head.appendChild(el);
+  });
+}
+async function getOcr(onStatus) {
+  if (ocrWorker) return ocrWorker;
+  onStatus('Scarico il lettore di testo (circa 10 MB, solo la prima volta)…');
+  if (!window.Tesseract) await loadScript(OCR.script);
+  ocrWorker = await Tesseract.createWorker(['ita'], 1, {
+    workerPath: OCR.worker, corePath: OCR.core, langPath: OCR.lang, cacheMethod: 'write',
+    logger: m => { if (m.status === 'recognizing text') onStatus('Leggo il testo… ' + Math.round(m.progress * 100) + '%'); }
+  });
+  await ocrWorker.setParameters({ tessedit_pageseg_mode: '11' }); // testo sparso: adatto alle copertine
+  return ocrWorker;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && ocrWorker && !ocrBusy) { ocrWorker.terminate().catch(() => {}); ocrWorker = null; }
+});
+
+async function loadImage(file) {
+  if (window.createImageBitmap) {
+    try { return await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch (e) {}
+  }
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file), im = new Image();
+    im.onload = () => { URL.revokeObjectURL(url); res(im); };
+    im.onerror = () => rej(new Error('immagine'));
+    im.src = url;
+  });
+}
+function drawScaled(img, maxSide) {
+  const w = img.width, h = img.height, k = Math.min(1, maxSide / Math.max(w, h));
+  const c = document.createElement('canvas');
+  c.width = Math.round(w * k); c.height = Math.round(h * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c;
+}
+const canvasBlob = (c, q) => new Promise(res => c.toBlob(res, 'image/jpeg', q));
+
+const caps = (t) => t === t.toUpperCase() && /\p{Lu}/u.test(t);
+const sentenceCase = (t) => { t = t.toLowerCase(); return t.charAt(0).toUpperCase() + t.slice(1); };
+const nameCase = (t) => t.toLowerCase().replace(/(^|[\s'’-])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+
+/** Da righe lette (testo, affidabilità, altezza, posizione) ricava un titolo e un autore probabili. */
+function suggestFromLines(raw) {
+  const lines = raw.map(l => ({ ...l, text: l.text.replace(/\s+/g, ' ').trim() }))
+    .filter(l => {
+      const letters = (l.text.match(/\p{L}/gu) || []).length;
+      return letters >= 3 && letters / l.text.length >= 0.6 && l.conf >= 45;
+    }).sort((a, b) => a.y - b.y);
+  if (!lines.length) return { lines, title: '', author: '' };
+  const maxH = Math.max(...lines.map(l => l.h));
+  const titleLines = lines.filter(l => l.h >= 0.65 * maxH);
+  let title = titleLines.map(l => l.text).join(' ');
+  if (caps(title)) title = sentenceCase(title);
+  // L'autore è di norma la riga più vicina al blocco del titolo (sopra o sotto); l'editore sta in fondo, più lontano
+  const top = Math.min(...titleLines.map(l => l.y)), bottom = Math.max(...titleLines.map(l => l.y + l.h));
+  const dist = (l) => l.y >= bottom ? l.y - bottom : Math.max(0, top - (l.y + l.h));
+  const rest = lines.filter(l => !titleLines.includes(l) && l.h >= 0.25 * maxH && l.text.split(' ').length <= 5);
+  rest.sort((a, b) => dist(a) - dist(b));
+  let author = rest[0] ? rest[0].text : '';
+  if (author && caps(author)) author = nameCase(author);
+  return { lines, title, author };
+}
+
+function renderOcrLines(lines) {
+  const ul = $('#ocr-lines');
+  ul.innerHTML = lines.map((l, i) => `<li><span class="ocr-text">${esc(l.text)}</span>
+    <span class="ocr-btns"><button type="button" class="chip" data-i="${i}" data-a="t">Titolo</button>
+    <button type="button" class="chip" data-i="${i}" data-a="t+">+ Titolo</button>
+    <button type="button" class="chip" data-i="${i}" data-a="a">Autore</button></span></li>`).join('');
+  $('#ocr-box').hidden = !lines.length;
+  ul._lines = lines;
+}
+$('#ocr-lines').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const l = $('#ocr-lines')._lines[+b.dataset.i];
+  const t = caps(l.text) ? (b.dataset.a === 'a' ? nameCase(l.text) : sentenceCase(l.text)) : l.text;
+  if (b.dataset.a === 't') $('#f-title').value = t;
+  else if (b.dataset.a === 't+') $('#f-title').value = ($('#f-title').value.trim() + ' ' + t).trim();
+  else $('#f-authors').value = t;
+});
+
+$('#btn-photo').addEventListener('click', () => $('#f-photo').click());
+$('#f-photo').addEventListener('change', async e => {
+  const file = e.target.files[0]; e.target.value = '';
+  if (!file || !editing) return;
+  const status = (t) => { $('#ocr-status').textContent = t; };
+  ocrBusy = true;
+  $('#btn-photo').disabled = true;
+  try {
+    status('Preparo la foto…');
+    const img = await loadImage(file);
+    // miniatura da conservare come copertina
+    const thumb = await canvasBlob(drawScaled(img, 480), 0.82);
+    pendingCover = thumb;
+    const prev = $('#f-cover-img');
+    prev.src = URL.createObjectURL(thumb); prev.hidden = false;
+
+    const worker = await getOcr(status);
+    status('Leggo il testo…');
+    const { data } = await worker.recognize(drawScaled(img, 1600), {}, { text: false, blocks: true, hocr: false, tsv: false });
+    const raw = [];
+    (data.blocks || []).forEach(b => b.paragraphs.forEach(p => p.lines.forEach(l =>
+      raw.push({ text: l.text || '', conf: l.confidence, h: l.bbox.y1 - l.bbox.y0, y: l.bbox.y0 }))));
+    const sug = suggestFromLines(raw);
+    renderOcrLines(sug.lines);
+    if (!sug.lines.length) { status('Foto salvata come copertina, ma non ho letto testo. Riprova con più luce, inquadrando solo la copertina.'); return; }
+    const filled = [];
+    if (sug.title && !$('#f-title').value.trim()) { $('#f-title').value = sug.title; filled.push('titolo'); }
+    if (sug.author && !$('#f-authors').value.trim()) { $('#f-authors').value = sug.author; filled.push('autore'); }
+    status(filled.length
+      ? `Proposti ${filled.join(' e ')}: controlla e correggi toccando le righe lette.`
+      : 'Titolo e autore erano già compilati: tocca una riga letta per sostituirli.');
+  } catch (err) {
+    status(navigator.onLine === false
+      ? 'Foto salvata come copertina. Per leggere il testo serve la connessione la prima volta.'
+      : 'Foto salvata come copertina, ma la lettura del testo non è riuscita. Compila a mano.');
+  } finally {
+    ocrBusy = false;
+    $('#btn-photo').disabled = false;
+  }
+});
+
 /* ---------- Statistiche e backup ---------- */
 const dlgMenu = $('#dlg-menu');
 $('#btn-menu').addEventListener('click', () => {
@@ -702,8 +902,18 @@ function download(name, text, type) {
 }
 const today = () => new Date().toISOString().slice(0, 10);
 
-$('#btn-export').addEventListener('click', () => {
-  download(`biblioteca-${today()}.json`, JSON.stringify({ app: 'biblioteca', schema: SCHEMA, appVersion: APP_VERSION, books }, null, 1), 'application/json');
+$('#btn-export').addEventListener('click', async () => {
+  const covers = {};
+  for (const b of books) {
+    if (!(b.cover && b.cover.startsWith('idb:'))) continue;
+    try {
+      const blob = await idbGet('cover:' + b.id);
+      if (blob) covers[b.id] = await blobToDataUrl(blob);
+    } catch (e) {}
+  }
+  const payload = { app: 'biblioteca', schema: SCHEMA, appVersion: APP_VERSION, books };
+  if (Object.keys(covers).length) payload.covers = covers;
+  download(`biblioteca-${today()}.json`, JSON.stringify(payload, null, 1), 'application/json');
 });
 $('#btn-csv').addEventListener('click', () => {
   const cols = ['list', 'title', 'authors', 'isbn', 'issn', 'collana', 'numero', 'publisher', 'year', 'pages', 'categories', 'status', 'rating', 'shelf', 'priority', 'price', 'where', 'notes'];
@@ -728,6 +938,11 @@ $('#file-import').addEventListener('change', async e => {
       const exists = books.some(x => x.id === b.id || (b.isbn && x.isbn === b.isbn && x.list === b.list));
       if (!exists) { books.push(Object.assign({ id: uid(), addedAt: Date.now() }, b)); added++; }
     });
+    if (!Array.isArray(data) && data.covers) {
+      for (const [id, url] of Object.entries(data.covers)) {
+        try { await idbPut('cover:' + id, await dataUrlToBlob(url)); dropCoverUrl(id); } catch (e) {}
+      }
+    }
     save(); render();
     toast(`Importati ${added} libri`);
     dlgMenu.close();

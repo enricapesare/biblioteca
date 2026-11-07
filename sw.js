@@ -1,4 +1,5 @@
 const VERSION = 'biblioteca-1.2.1';   // aggiornata da scripts/release.sh
+const OCR_CACHE = 'biblioteca-ocr-v1';   // lettore di testo scaricato una volta: non si cancella ai rilasci
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'vendor/zxing.min.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 const COVER_HOSTS = ['books.google.com', 'books.googleusercontent.com', 'covers.openlibrary.org', 'archive.org'];
 
@@ -6,12 +7,24 @@ self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION && k !== OCR_CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+
+  // Lettore di testo (OCR) da jsDelivr: dalla cache dopo il primo scaricamento
+  if (url.hostname === 'cdn.jsdelivr.net') {
+    e.respondWith(caches.open(OCR_CACHE).then(async c => {
+      const hit = await c.match(req);
+      if (hit) return hit;
+      const r = await fetch(req);
+      if (r.ok || r.type === 'opaque') c.put(req, r.clone());
+      return r;
+    }));
+    return;
+  }
 
   // Copertine: dalla cache se già viste, altrimenti rete e salvataggio
   if (COVER_HOSTS.some(h => url.hostname === h || url.hostname.endsWith('.' + h)) && req.destination === 'image') {
