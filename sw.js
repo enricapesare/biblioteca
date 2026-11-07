@@ -1,4 +1,4 @@
-const VERSION = 'biblioteca-1.2.1';   // aggiornata da scripts/release.sh
+const VERSION = 'biblioteca-1.3.0';   // aggiornata da scripts/release.sh
 const OCR_CACHE = 'biblioteca-ocr-v1';   // lettore di testo scaricato una volta: non si cancella ai rilasci
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'vendor/zxing.min.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 const COVER_HOSTS = ['books.google.com', 'books.googleusercontent.com', 'covers.openlibrary.org', 'archive.org'];
