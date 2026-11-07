@@ -4,6 +4,12 @@ Formato basato su [Keep a Changelog](https://keepachangelog.com/it/1.1.0/), vers
 
 ## [Non rilasciato]
 
+## [1.4.0] - 2026-11-07
+### Aggiunto
+- Dopo lo scatto della copertina si apre un editor per ruotare di 90°, raddrizzare, ritagliare i bordi del libro (con rilevamento automatico) e usare la foto ritagliata per l'immagine e per la lettura del testo.
+### Corretto
+- Pulsante della foto che poteva restare inutilizzabile dopo una lettura interrotta; una lettura vecchia non scrive più nella scheda di un altro libro; la lettura ha un tempo massimo.
+
 ## [1.3.0] - 2026-11-07
 ### Aggiunto
 - Foto della copertina: diventa l'immagine del libro e il testo viene letto sul telefono (OCR) per proporre titolo e autore; le righe lette si possono assegnare a titolo o autore con un tocco.
