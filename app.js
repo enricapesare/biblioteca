@@ -62,6 +62,31 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const norm = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
 const splitList = (s) => String(s || '').split(',').map(x => x.trim()).filter(Boolean);
+/* Codici ISSN (periodici e collane a uscita periodica): EAN-13 che inizia per 977 */
+function issnCheck(d7) {
+  let sum = 0;
+  for (let i = 0; i < 7; i++) sum += (+d7[i]) * (8 - i);
+  const r = sum % 11, c = r === 0 ? 0 : 11 - r;
+  return c === 10 ? 'X' : String(c);
+}
+function issnFromEan(ean) {
+  const d = ean.slice(3, 10);
+  return d.slice(0, 4) + '-' + d.slice(4) + issnCheck(d);
+}
+function issnValid(raw) {
+  const s = cleanIsbn(raw);
+  if (!/^\d{7}[\dX]$/.test(s) || issnCheck(s.slice(0, 7)) !== s[7]) return null;
+  return s.slice(0, 4) + '-' + s.slice(4);
+}
+/** Riconosce ISBN (libri) e ISSN (collane e periodici). */
+function parseCode(raw) {
+  const s = cleanIsbn(raw);
+  const isbn = toIsbn13(s);
+  if (isbn) return { type: 'isbn', isbn };
+  if (s.length === 13 && /^977/.test(s) && isbn13Valid(s)) return { type: 'issn', issn: issnFromEan(s), ean: s };
+  if (s.length === 8) { const i = issnValid(s); if (i) return { type: 'issn', issn: i, ean: '' }; }
+  return null;
+}
 const STATUS = { 'da-leggere': 'Da leggere', 'in-lettura': 'In lettura', 'letto': 'Letto' };
 const PRIO = { alta: 'Alta', media: 'Media', bassa: 'Bassa' };
 
@@ -240,6 +265,7 @@ function cardHtml(b) {
   return `<li><button class="card" data-id="${b.id}">${coverHtml(b)}
     <span class="meta"><span class="t">${esc(b.title)}</span>
     <span class="a">${esc(authors)}</span>
+    ${b.collana ? `<span class="a">${esc(b.collana)}${b.numero ? ' · n. ' + esc(b.numero) : ''}</span>` : ''}
     <span class="s">${extra}</span></span></button></li>`;
 }
 
@@ -254,13 +280,14 @@ function renderList(list) {
     if (catFilter) items = items.filter(b => (b.categories || []).includes(catFilter));
   } else if (f !== 'all') items = items.filter(b => b.priority === f);
 
-  if (q) items = items.filter(b => norm([b.title, (b.authors || []).join(' '), b.isbn, b.shelf, b.publisher, (b.categories || []).join(' '), b.notes, b.where].join(' ')).includes(q));
+  if (q) items = items.filter(b => norm([b.title, (b.authors || []).join(' '), b.isbn, b.issn, b.collana, b.numero, b.shelf, b.publisher, (b.categories || []).join(' '), b.notes, b.where].join(' ')).includes(q));
 
   if (list === 'library') {
     const s = $('#sort-library').value;
     const key = (b) => norm((b.authors || [])[0] || '');
     if (s === 'titolo') items.sort((a, b) => norm(a.title).localeCompare(norm(b.title)));
     else if (s === 'autore') items.sort((a, b) => key(a).localeCompare(key(b)) || norm(a.title).localeCompare(norm(b.title)));
+    else if (s === 'collana') items.sort((a, b) => norm(a.collana || '\uffff').localeCompare(norm(b.collana || '\uffff')) || (parseFloat(a.numero) || 0) - (parseFloat(b.numero) || 0) || norm(a.title).localeCompare(norm(b.title)));
     else if (s === 'voto') items.sort((a, b) => (b.rating || 0) - (a.rating || 0));
     else items.sort((a, b) => b.addedAt - a.addedAt);
   } else {
@@ -325,6 +352,10 @@ function openBook(book, isNew = false) {
   $('#f-year').value = book.year || '';
   $('#f-pages').value = book.pages || '';
   $('#f-isbn').value = book.isbn || '';
+  $('#f-collana').value = book.collana || '';
+  $('#f-numero').value = book.numero || '';
+  $('#f-numero').placeholder = '';
+  $('#f-issn').value = book.issn || '';
   $('#f-categories').value = (book.categories || []).join(', ');
   $('#f-notes').value = book.notes || '';
   $('#f-status').value = book.status || 'da-leggere';
@@ -344,6 +375,7 @@ function openBook(book, isNew = false) {
   // Datalist con generi e posizioni già usati
   const uniq = (arr) => [...new Set(arr.filter(Boolean))];
   $('#dl-cats').innerHTML = uniq(books.flatMap(b => b.categories || [])).map(c => `<option value="${esc(c)}">`).join('');
+  $('#dl-collane').innerHTML = uniq(books.map(b => b.collana)).map(c => `<option value="${esc(c)}">`).join('');
   $('#dl-shelves').innerHTML = uniq(books.map(b => b.shelf)).map(c => `<option value="${esc(c)}">`).join('');
 
   // Avviso di duplicato
@@ -376,6 +408,10 @@ function readForm() {
   b.pages = $('#f-pages').value.trim();
   const rawIsbn = $('#f-isbn').value.trim();
   b.isbn = toIsbn13(rawIsbn) || cleanIsbn(rawIsbn);
+  b.collana = $('#f-collana').value.trim();
+  b.numero = $('#f-numero').value.trim();
+  const rawIssn = $('#f-issn').value.trim();
+  b.issn = issnValid(rawIssn) || rawIssn;
   b.categories = splitList($('#f-categories').value);
   b.notes = $('#f-notes').value.trim();
   if (b.list === 'library') {
@@ -400,6 +436,8 @@ $('#form-book').addEventListener('submit', e => {
   const { isNew } = editing;
   const b = readForm();
   if (!b.title) { $('#f-title').focus(); return; }
+  if (isNew && b.issn && b.numero && books.some(x => x.id !== b.id && x.issn === b.issn && String(x.numero) === String(b.numero)) &&
+      !confirm('Questa uscita della collana è già presente. Aggiungerla comunque?')) return;
   commit(b, isNew);
   dlg.close();
   toast(isNew ? (b.list === 'library' ? 'Aggiunto alla biblioteca' : 'Aggiunto a Da acquistare') : 'Modifiche salvate');
@@ -444,7 +482,7 @@ $('#dest').addEventListener('click', e => {
 function newBook(data) {
   const base = {
     id: uid(), list: dest, addedAt: Date.now(),
-    isbn: '', title: '', authors: [], publisher: '', year: '', pages: '', categories: [], description: '', cover: '', notes: ''
+    isbn: '', issn: '', collana: '', numero: '', title: '', authors: [], publisher: '', year: '', pages: '', categories: [], description: '', cover: '', notes: ''
   };
   const b = Object.assign(base, data);
   if (dest === 'library') Object.assign(b, { status: 'da-leggere', rating: 0, shelf: '' });
@@ -466,12 +504,39 @@ async function handleIsbn(isbn) {
   ban.textContent = note; ban.hidden = false;
 }
 
+/** Collane e periodici: non esistono schede online, si riporta quanto già inserito per la stessa collana. */
+function handleSerial({ issn }) {
+  const same = books.filter(b => b.issn === issn).sort((a, b) => b.addedAt - a.addedAt);
+  const prev = same[0];
+  const data = { issn };
+  if (prev) {
+    const name = prev.collana || prev.title;
+    Object.assign(data, { title: name, collana: name, publisher: prev.publisher, authors: prev.authors || [], categories: prev.categories || [] });
+  }
+  setMsg('Collana o periodico (ISSN ' + issn + ')');
+  openBook(newBook(data), true);
+  const ban = $('#dup-banner');
+  ban.textContent = prev
+    ? `Collana già presente (${same.length} ${same.length === 1 ? 'uscita' : 'uscite'}): ho riportato i dati dell'ultima. Indica il numero dell'uscita.`
+    : `Codice di una collana o periodico (ISSN ${issn}): non ha una scheda online. Compila i dati questa volta, le prossime uscite si compilano da sole.`;
+  ban.hidden = false;
+  const n = prev && parseFloat(prev.numero);
+  if (n) $('#f-numero').placeholder = 'es. ' + (n + 1);
+}
+
 $('#form-isbn').addEventListener('submit', e => {
   e.preventDefault();
-  const isbn = toIsbn13($('#isbn-input').value);
-  if (!isbn) { toast('ISBN non valido. Controlla le cifre (10 o 13)'); return; }
+  const raw = $('#isbn-input').value;
+  const code = parseCode(raw);
+  if (!code) {
+    const d = cleanIsbn(raw);
+    toast(/^977/.test(d) && d.length < 13
+      ? 'Codice incompleto: quello delle collane ha 13 cifre, sotto le barre (senza il supplemento a 5 cifre)'
+      : 'Codice non valido. Servono 10 o 13 cifre per ISBN, 13 cifre (977…) o 8 per ISSN');
+    return;
+  }
   stopScan();
-  handleIsbn(isbn);
+  code.type === 'isbn' ? handleIsbn(code.isbn) : handleSerial(code);
 });
 
 $('#form-title').addEventListener('submit', async e => {
@@ -550,11 +615,12 @@ function stopScan() {
 }
 
 async function onCode(raw) {
-  const isbn = toIsbn13(raw);
+  const code = parseCode(raw);
   const now = Date.now();
-  if (!isbn) return;                       // altri codici (prezzi, add-on) ignorati
-  if (busy || (isbn === lastCode && now - lastAt < 4000)) return;
-  lastCode = isbn; lastAt = now; busy = true;
+  if (!code) return;                       // altri codici (prezzi, add-on) ignorati
+  const id = code.type === 'isbn' ? code.isbn : code.ean || code.issn;
+  if (busy || (id === lastCode && now - lastAt < 4000)) return;
+  lastCode = id; lastAt = now; busy = true;
   if (navigator.vibrate) navigator.vibrate(60);
   const wasOn = scanWanted;
   // Metto in pausa la fotocamera mentre la scheda è aperta
@@ -564,7 +630,7 @@ async function onCode(raw) {
   video.srcObject = null;
   $('#btn-scan').textContent = 'Avvia fotocamera';
   scanWanted = wasOn;                      // al salvataggio riparte da sola
-  try { await handleIsbn(isbn); } finally { busy = false; }
+  try { await (code.type === 'isbn' ? handleIsbn(code.isbn) : handleSerial(code)); } finally { busy = false; }
 }
 
 function loopNative() {
@@ -640,7 +706,7 @@ $('#btn-export').addEventListener('click', () => {
   download(`biblioteca-${today()}.json`, JSON.stringify({ app: 'biblioteca', schema: SCHEMA, appVersion: APP_VERSION, books }, null, 1), 'application/json');
 });
 $('#btn-csv').addEventListener('click', () => {
-  const cols = ['list', 'title', 'authors', 'isbn', 'publisher', 'year', 'pages', 'categories', 'status', 'rating', 'shelf', 'priority', 'price', 'where', 'notes'];
+  const cols = ['list', 'title', 'authors', 'isbn', 'issn', 'collana', 'numero', 'publisher', 'year', 'pages', 'categories', 'status', 'rating', 'shelf', 'priority', 'price', 'where', 'notes'];
   const q = (v) => '"' + String(Array.isArray(v) ? v.join('; ') : (v ?? '')).replace(/"/g, '""') + '"';
   const csv = '﻿' + [cols.join(';'), ...books.map(b => cols.map(c => q(b[c])).join(';'))].join('\r\n');
   download(`biblioteca-${today()}.csv`, csv, 'text/csv;charset=utf-8');

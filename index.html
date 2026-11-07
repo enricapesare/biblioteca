@@ -39,6 +39,7 @@
           <option value="recenti">Recenti</option>
           <option value="titolo">Titolo</option>
           <option value="autore">Autore</option>
+          <option value="collana">Collana</option>
           <option value="voto">Voto</option>
         </select>
       </div>
@@ -83,9 +84,9 @@
     </div>
 
     <form id="form-isbn" class="inline-form">
-      <label for="isbn-input">Oppure scrivi l'ISBN</label>
+      <label for="isbn-input">Oppure scrivi l'ISBN (o il codice 977… delle collane)</label>
       <div class="row">
-        <input id="isbn-input" inputmode="numeric" autocomplete="off" placeholder="978…" maxlength="17">
+        <input id="isbn-input" inputmode="numeric" autocomplete="off" placeholder="978…" maxlength="20">
         <button class="btn" type="submit">Cerca</button>
       </div>
     </form>
@@ -142,6 +143,13 @@
       <div><label for="f-year">Anno</label><input id="f-year" inputmode="numeric" maxlength="4"></div>
       <div><label for="f-pages">Pagine</label><input id="f-pages" inputmode="numeric"></div>
       <div><label for="f-isbn">ISBN</label><input id="f-isbn" inputmode="numeric" autocomplete="off"></div>
+    </div>
+    <label for="f-collana">Collana o serie</label>
+    <input id="f-collana" list="dl-collane" autocomplete="off">
+    <datalist id="dl-collane"></datalist>
+    <div class="grid2">
+      <div><label for="f-numero">Numero</label><input id="f-numero" autocomplete="off"></div>
+      <div><label for="f-issn">ISSN</label><input id="f-issn" autocomplete="off" placeholder="1234-5678"></div>
     </div>
     <label for="f-categories">Generi (separati da virgola)</label>
     <input id="f-categories" list="dl-cats" autocomplete="off">
