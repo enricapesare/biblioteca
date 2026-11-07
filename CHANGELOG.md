@@ -4,6 +4,11 @@ Formato basato su [Keep a Changelog](https://keepachangelog.com/it/1.1.0/), vers
 
 ## [Non rilasciato]
 
+## [1.2.0] - 2026-11-07
+### Aggiunto
+- Collane e periodici: riconoscimento dei codici a barre 977… (ISSN), campi Collana, Numero e ISSN, ordinamento per collana.
+- Alla scansione di una collana già presente vengono riportati i dati dell'ultima uscita; avviso se l'uscita è già inserita.
+
 ## [1.1.0] - 2026-11-07
 ### Aggiunto
 - Campo per una chiave API di Google Books nel menu, per evitare il blocco 429 delle richieste anonime.
