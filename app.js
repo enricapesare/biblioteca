@@ -828,116 +828,332 @@ $('#ocr-lines').addEventListener('click', e => {
   else $('#f-authors').value = t;
 });
 
-/* ---- Editor foto: ruota, raddrizza e ritaglia ---- */
-const cropDlg = $('#dlg-crop'), cropCanvas = $('#crop-canvas'), cropBox = $('#crop-box');
-const CROP_DEFAULT = { x0: 0.05, y0: 0.05, x1: 0.95, y1: 0.95 };
-let cropState = null;
+/* ---- Calcolo immagini: prospettiva e miglioramento luce (funzioni pure su pixel RGBA) ---- */
+function solveHomography(dst, src) {
+  // trova H con [u v 1] ~ H [x y 1], dove (x,y) in dst e (u,v) in src
+  const A = [], B = [];
+  for (let i = 0; i < 4; i++) {
+    const { x, y } = dst[i], { x: u, y: v } = src[i];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); B.push(u);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); B.push(v);
+  }
+  const n = 8;
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]]; [B[c], B[p]] = [B[p], B[c]];
+    for (let r = c + 1; r < n; r++) {
+      const f = A[r][c] / A[c][c];
+      for (let k = c; k < n; k++) A[r][k] -= f * A[c][k];
+      B[r] -= f * B[c];
+    }
+  }
+  const h = new Array(n);
+  for (let r = n - 1; r >= 0; r--) {
+    let t = B[r];
+    for (let k = r + 1; k < n; k++) t -= A[r][k] * h[k];
+    h[r] = t / A[r][r];
+  }
+  return h;
+}
+const distPt = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+/** Dimensioni del rettangolo di arrivo per un quadrilatero (TL, TR, BR, BL) in pixel. */
+function quadSize(q, maxSide) {
+  let W = Math.max(distPt(q[0], q[1]), distPt(q[3], q[2])), H = Math.max(distPt(q[0], q[3]), distPt(q[1], q[2]));
+  const k = Math.min(1, maxSide / Math.max(W, H));
+  return { W: Math.max(8, Math.round(W * k)), H: Math.max(8, Math.round(H * k)) };
+}
+/** Raddrizza il quadrilatero q (pixel dell'immagine sorgente) in un rettangolo W x H, con interpolazione bilineare. */
+function warpPixels(src, sw, sh, q, W, H) {
+  const out = new Uint8ClampedArray(W * H * 4);
+  const h = solveHomography([{ x: 0, y: 0 }, { x: W, y: 0 }, { x: W, y: H }, { x: 0, y: H }], q);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const px = x + 0.5, py = y + 0.5;
+      const den = h[6] * px + h[7] * py + 1;
+      let u = (h[0] * px + h[1] * py + h[2]) / den - 0.5, v = (h[3] * px + h[4] * py + h[5]) / den - 0.5;
+      u = Math.min(sw - 1.001, Math.max(0, u)); v = Math.min(sh - 1.001, Math.max(0, v));
+      const x0 = u | 0, y0 = v | 0, fx = u - x0, fy = v - y0;
+      const i00 = (y0 * sw + x0) * 4, i10 = i00 + 4, i01 = i00 + sw * 4, i11 = i01 + 4, o = (y * W + x) * 4;
+      for (let c = 0; c < 3; c++) {
+        out[o + c] = (src[i00 + c] * (1 - fx) + src[i10 + c] * fx) * (1 - fy) + (src[i01 + c] * (1 - fx) + src[i11 + c] * fx) * fy;
+      }
+      out[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
+function boxBlur(a, w, h, r, passes) {
+  let src = a, tmp = new Float32Array(w * h);
+  for (let p = 0; p < passes; p++) {
+    for (let y = 0; y < h; y++) {                       // orizzontale
+      let sum = 0, cnt = 0;
+      for (let x = -r; x <= r; x++) if (x >= 0 && x < w) { sum += src[y * w + x]; cnt++; }
+      for (let x = 0; x < w; x++) {
+        tmp[y * w + x] = sum / cnt;
+        const add = x + r + 1, rem = x - r;
+        if (add < w) { sum += src[y * w + add]; cnt++; }
+        if (rem >= 0) { sum -= src[y * w + rem]; cnt--; }
+      }
+    }
+    const dst = src === a ? new Float32Array(w * h) : src;
+    for (let x = 0; x < w; x++) {                       // verticale
+      let sum = 0, cnt = 0;
+      for (let y = -r; y <= r; y++) if (y >= 0 && y < h) { sum += tmp[y * w + x]; cnt++; }
+      for (let y = 0; y < h; y++) {
+        dst[y * w + x] = sum / cnt;
+        const add = y + r + 1, rem = y - r;
+        if (add < h) { sum += tmp[add * w + x]; cnt++; }
+        if (rem >= 0) { sum -= tmp[rem * w + x]; cnt--; }
+      }
+    }
+    src = dst;
+  }
+  return src;
+}
+const lumaOf = (d, n) => { const L = new Float32Array(n); for (let i = 0; i < n; i++) L[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2]; return L; };
+const clamp255 = (v) => v < 0 ? 0 : v > 255 ? 255 : v;
+
+/** Corregge ombre, riflessi, contrasto e nitidezza (ogni valore da 0 a 1). Modifica i pixel sul posto. */
+function enhancePixels(d, w, h, o) {
+  const n = w * h;
+  if (!(o.shadow || o.glare || o.contrast || o.sharp)) return;
+  const gmask = o.glare ? new Float32Array(n) : null;   // dove c'è un riflesso (0..1); si applica dopo il contrasto
+
+  if (o.shadow || o.glare) {
+    // mappa della luce: luminosità media su una griglia piccola, sfocata, poi interpolata
+    const k = Math.min(1, 96 / Math.max(w, h)), sw = Math.max(4, Math.round(w * k)), sh = Math.max(4, Math.round(h * k));
+    let small = new Float32Array(sw * sh); const cnt = new Float32Array(sw * sh);
+    const L = lumaOf(d, n);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const j = Math.min(sh - 1, (y * sh / h) | 0) * sw + Math.min(sw - 1, (x * sw / w) | 0);
+      small[j] += L[y * w + x]; cnt[j]++;
+    }
+    for (let j = 0; j < small.length; j++) small[j] = cnt[j] ? small[j] / cnt[j] : 0;
+    const wide = boxBlur(small, sw, sh, Math.max(2, Math.round(Math.max(sw, sh) * 0.08)), 2);   // luce di fondo (ombre)
+    const near = boxBlur(small, sw, sh, 2, 1);                                                   // vicinato stretto (riflessi)
+    const sorted = Float32Array.from(wide).sort();
+    const ref = sorted[Math.floor(sorted.length * 0.8)];
+    const at = (m, x, y) => {
+      const gy = Math.min(sh - 1.001, Math.max(0, (y + 0.5) * sh / h - 0.5)), y0 = gy | 0, fy = gy - y0;
+      const gx = Math.min(sw - 1.001, Math.max(0, (x + 0.5) * sw / w - 0.5)), x0 = gx | 0, fx = gx - x0;
+      return (m[y0 * sw + x0] * (1 - fx) + m[y0 * sw + x0 + 1] * fx) * (1 - fy) + (m[(y0 + 1) * sw + x0] * (1 - fx) + m[(y0 + 1) * sw + x0 + 1] * fx) * fy;
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        let f = 1;
+        if (o.shadow) f = 1 + o.shadow * (Math.min(2.5, Math.max(1, ref / Math.max(at(wide, x, y), 20))) - 1);   // schiarisce solo le zone in ombra
+        // riflessi: solo punti quasi bianchi dentro una chiazza chiara (le scritte bianche sottili non vengono toccate)
+        if (gmask) gmask[i] = Math.min(1, Math.max(0, (L[i] - 225) / 25)) * Math.min(1, Math.max(0, (at(near, x, y) - 215) / 20));
+        d[4 * i] = clamp255(d[4 * i] * f); d[4 * i + 1] = clamp255(d[4 * i + 1] * f); d[4 * i + 2] = clamp255(d[4 * i + 2] * f);
+      }
+    }
+  }
+
+  if (o.contrast) {
+    const L = lumaOf(d, n), hist = new Uint32Array(256);
+    for (let i = 0; i < n; i++) hist[Math.min(255, L[i] | 0)]++;
+    let acc = 0, lo = 0, hi = 255;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.01) { lo = v; break; } }
+    acc = 0;
+    for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= n * 0.01) { hi = v; break; } }
+    if (hi - lo > 30) {
+      const l2 = lo * o.contrast, h2 = 255 - (255 - hi) * o.contrast, sc = 255 / (h2 - l2);
+      for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) d[4 * i + c] = clamp255((d[4 * i + c] - l2) * sc);
+    }
+  }
+
+  if (gmask) {
+    for (let i = 0; i < n; i++) {
+      if (!gmask[i]) continue;
+      const f = 1 - 0.45 * o.glare * gmask[i];
+      d[4 * i] *= f; d[4 * i + 1] *= f; d[4 * i + 2] *= f;
+    }
+  }
+
+  if (o.sharp) {
+    const L = lumaOf(d, n), B = boxBlur(L, w, h, 1, 1), amt = o.sharp * 1.5;
+    for (let i = 0; i < n; i++) {
+      const dl = (L[i] - B[i]) * amt;
+      d[4 * i] = clamp255(d[4 * i] + dl); d[4 * i + 1] = clamp255(d[4 * i + 1] + dl); d[4 * i + 2] = clamp255(d[4 * i + 2] + dl);
+    }
+  }
+}
+
+/** Ordina quattro punti in alto-sinistra, alto-destra, basso-destra, basso-sinistra. */
+function orderQuad(pts) {
+  const s = [...pts].sort((a, b) => a.y - b.y);
+  const top = s.slice(0, 2).sort((a, b) => a.x - b.x), bot = s.slice(2).sort((a, b) => a.x - b.x);
+  return [top[0], top[1], bot[1], bot[0]];
+}
+/** Trova i quattro angoli del libro: i punti più lontani, nelle quattro diagonali, tra quelli diversi dal fondo. */
+function detectQuadPixels(d, w, h) {
+  const px = (x, y) => (y * w + x) * 4;
+  const ring = [];
+  const push = (x, y) => { const i = px(x, y); ring.push([d[i], d[i + 1], d[i + 2]]); };
+  for (let x = 0; x < w; x++) { push(x, 0); push(x, 1); push(x, h - 1); push(x, h - 2); }
+  for (let y = 0; y < h; y++) { push(0, y); push(1, y); push(w - 1, y); push(w - 2, y); }
+  const med = (c) => { const v = ring.map(p => p[c]).sort((a, b) => a - b); return v[v.length >> 1]; };
+  const bg = [med(0), med(1), med(2)];
+  const mask = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = px(x, y);
+    mask[y * w + x] = (Math.abs(d[i] - bg[0]) + Math.abs(d[i + 1] - bg[1]) + Math.abs(d[i + 2] - bg[2])) > 70 ? 1 : 0;
+  }
+  // elimina i puntini isolati: serve almeno la maggioranza dei vicini
+  const clean = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    let s = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) s += mask[(y + dy) * w + x + dx];
+    clean[y * w + x] = s >= 6 ? 1 : 0;
+  }
+  let tl = null, tr = null, br = null, bl = null, area = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (!clean[y * w + x]) continue;
+    area++;
+    const s = x + y, t = x - y;
+    if (!tl || s < tl.s) tl = { x, y, s };
+    if (!br || s > br.s) br = { x, y, s };
+    if (!tr || t > tr.t) tr = { x, y, t };
+    if (!bl || t < bl.t) bl = { x, y, t };
+  }
+  if (!tl || area < w * h * 0.1) return null;
+  let q = [tl, tr, br, bl].map(p => ({ x: p.x + 0.5, y: p.y + 0.5 }));
+  const poly = Math.abs(q.reduce((a, p, i) => a + (p.x * q[(i + 1) % 4].y - q[(i + 1) % 4].x * p.y), 0)) / 2;
+  if (poly < w * h * 0.2 || poly > w * h * 0.97) return null;
+  const cx = q.reduce((a, p) => a + p.x, 0) / 4, cy = q.reduce((a, p) => a + p.y, 0) / 4;
+  q = q.map(p => ({ x: Math.min(w, Math.max(0, p.x + (p.x - cx) * 0.02)), y: Math.min(h, Math.max(0, p.y + (p.y - cy) * 0.02)) }));
+  return q;
+}
+
+/* ---- Editor foto: ruota, ritaglia con prospettiva, migliora la luce ---- */
+const cropDlg = $('#dlg-crop'), cropCanvas = $('#crop-canvas'), enhCanvas = $('#enh-canvas');
+const DEFAULT_QUAD = [{ x: 0.05, y: 0.05 }, { x: 0.95, y: 0.05 }, { x: 0.95, y: 0.95 }, { x: 0.05, y: 0.95 }];
+const AUTO_ENH = { shadow: 0.5, glare: 0.3, contrast: 0.3, sharp: 0.3 };
+let ed = null, cropDone = null;
 
 function drawWork() {
-  const { img, rot, angle } = cropState;
+  const { img, rot } = ed;
   const swap = rot % 180 !== 0;
   const bw = swap ? img.height : img.width, bh = swap ? img.width : img.height;
   const k = Math.min(1, 1600 / Math.max(bw, bh));
   cropCanvas.width = Math.round(bw * k); cropCanvas.height = Math.round(bh * k);
   const ctx = cropCanvas.getContext('2d');
-  ctx.fillStyle = '#555'; ctx.fillRect(0, 0, cropCanvas.width, cropCanvas.height);
   ctx.save();
   ctx.translate(cropCanvas.width / 2, cropCanvas.height / 2);
-  ctx.rotate((rot + angle) * Math.PI / 180);
+  ctx.rotate(rot * Math.PI / 180);
   ctx.drawImage(img, -img.width * k / 2, -img.height * k / 2, img.width * k, img.height * k);
   ctx.restore();
 }
-function updateBox() {
-  const c = cropState.crop;
-  cropBox.style.left = c.x0 * 100 + '%'; cropBox.style.top = c.y0 * 100 + '%';
-  cropBox.style.width = (c.x1 - c.x0) * 100 + '%'; cropBox.style.height = (c.y1 - c.y0) * 100 + '%';
+function updateQuad() {
+  const q = ed.quad;
+  const pts = q.map(p => `${p.x * 100},${p.y * 100}`).join(' ');
+  $('#crop-poly').setAttribute('points', pts);
+  $('#crop-mask').setAttribute('d', 'M0 0H100V100H0Z M' + q.map(p => `${p.x * 100} ${p.y * 100}`).join(' L') + 'Z');
+  $$('#crop-stage i').forEach(el => { const p = q[+el.dataset.c]; el.style.left = p.x * 100 + '%'; el.style.top = p.y * 100 + '%'; });
 }
-
-/** Cerca il rettangolo occupato dal libro: tutto ciò che differisce dal colore del fondo lungo i bordi. */
-function detectBookRect() {
-  const W = 200, k = W / Math.max(cropCanvas.width, cropCanvas.height);
+function autoQuad() {
+  const k = 150 / Math.max(cropCanvas.width, cropCanvas.height);
   const w = Math.max(8, Math.round(cropCanvas.width * k)), h = Math.max(8, Math.round(cropCanvas.height * k));
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const cx = c.getContext('2d'); cx.drawImage(cropCanvas, 0, 0, w, h);
-  const d = cx.getImageData(0, 0, w, h).data;
-  const px = (x, y) => { const i = (y * w + x) * 4; return [d[i], d[i + 1], d[i + 2]]; };
-  const ring = [];
-  for (let x = 0; x < w; x++) { ring.push(px(x, 0), px(x, 1), px(x, h - 1), px(x, h - 2)); }
-  for (let y = 0; y < h; y++) { ring.push(px(0, y), px(1, y), px(w - 1, y), px(w - 2, y)); }
-  const med = (ch) => { const v = ring.map(p => p[ch]).sort((a, b) => a - b); return v[v.length >> 1]; };
-  const bg = [med(0), med(1), med(2)];
-  const diff = (p) => Math.abs(p[0] - bg[0]) + Math.abs(p[1] - bg[1]) + Math.abs(p[2] - bg[2]);
-  const rows = new Array(h).fill(0), cols = new Array(w).fill(0);
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (diff(px(x, y)) > 70) { rows[y]++; cols[x]++; }
-  const first = (arr, need) => arr.findIndex(v => v >= need);
-  const last = (arr, need) => { for (let i = arr.length - 1; i >= 0; i--) if (arr[i] >= need) return i; return -1; };
-  const y0 = first(rows, w * 0.05), y1 = last(rows, w * 0.05), x0 = first(cols, h * 0.05), x1 = last(cols, h * 0.05);
-  if (y0 < 0 || x0 < 0 || y1 <= y0 || x1 <= x0) return null;
-  const r = { x0: Math.max(0, x0 / w - 0.01), y0: Math.max(0, y0 / h - 0.01), x1: Math.min(1, (x1 + 1) / w + 0.01), y1: Math.min(1, (y1 + 1) / h + 0.01) };
-  const area = (r.x1 - r.x0) * (r.y1 - r.y0);
-  return area < 0.2 || area > 0.97 ? null : r;
+  const q = detectQuadPixels(cx.getImageData(0, 0, w, h).data, w, h);
+  return q ? orderQuad(q.map(p => ({ x: p.x / w, y: p.y / h }))) : null;
 }
-
-let cropDone = null;
+function showPanel(which) {
+  $('#panel-crop').hidden = which !== 'crop'; $('#panel-enh').hidden = which !== 'enh';
+  $('#crop-title').textContent = which === 'crop' ? 'Ruota e ritaglia' : 'Migliora la foto';
+}
 function editPhoto(img) {
   return new Promise(resolve => {
-    cropState = { img, rot: 0, angle: 0, crop: { ...CROP_DEFAULT } };
-    $('#crop-angle').value = '0';
-    drawWork(); updateBox();
-    const auto = detectBookRect();
-    if (auto) { cropState.crop = auto; updateBox(); }
+    ed = { img, rot: 0, quad: DEFAULT_QUAD.map(p => ({ ...p })), base: null, prev: null };
+    showPanel('crop');
+    drawWork();
+    const q = autoQuad();
+    if (q) ed.quad = q;
+    updateQuad();
     cropDone = (result) => { cropDone = null; if (cropDlg.open) cropDlg.close(); resolve(result); };
     cropDlg.showModal();
   });
 }
-function finishCrop(useCrop) {
-  const full = { x0: 0, y0: 0, x1: 1, y1: 1 };
-  const c = useCrop ? cropState.crop : full;
-  const sx = Math.round(c.x0 * cropCanvas.width), sy = Math.round(c.y0 * cropCanvas.height);
-  const sw = Math.max(8, Math.round((c.x1 - c.x0) * cropCanvas.width)), sh = Math.max(8, Math.round((c.y1 - c.y0) * cropCanvas.height));
-  const out = document.createElement('canvas'); out.width = sw; out.height = sh;
-  out.getContext('2d').drawImage(cropCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-  cropDone && cropDone(out);
+
+function goEnhance(useQuad) {
+  let base;
+  if (useQuad) {
+    const q = ed.quad.map(p => ({ x: p.x * cropCanvas.width, y: p.y * cropCanvas.height }));
+    const { W, H } = quadSize(q, 1400);
+    const src = cropCanvas.getContext('2d').getImageData(0, 0, cropCanvas.width, cropCanvas.height).data;
+    base = document.createElement('canvas'); base.width = W; base.height = H;
+    base.getContext('2d').putImageData(new ImageData(warpPixels(src, cropCanvas.width, cropCanvas.height, q, W, H), W, H), 0, 0);
+  } else {
+    base = drawScaled(cropCanvas, 1400);
+  }
+  ed.base = base; ed.prev = drawScaled(base, 560);
+  setEnhValues(AUTO_ENH);
+  showPanel('enh');
+  renderEnhPreview();
 }
-$('#crop-ok').addEventListener('click', () => finishCrop(true));
-$('#crop-skip').addEventListener('click', () => finishCrop(false));
+const enhIds = { shadow: '#enh-shadow', glare: '#enh-glare', contrast: '#enh-contrast', sharp: '#enh-sharp' };
+function enhValues() { const o = {}; for (const k in enhIds) o[k] = +$(enhIds[k]).value / 100; return o; }
+function setEnhValues(o) { for (const k in enhIds) $(enhIds[k]).value = Math.round((o[k] || 0) * 100); }
+function enhanced(srcCanvas, o) {
+  const c = document.createElement('canvas'); c.width = srcCanvas.width; c.height = srcCanvas.height;
+  const ctx = c.getContext('2d'); ctx.drawImage(srcCanvas, 0, 0);
+  const id = ctx.getImageData(0, 0, c.width, c.height);
+  enhancePixels(id.data, c.width, c.height, o);
+  ctx.putImageData(id, 0, 0);
+  return c;
+}
+let enhRaf = 0;
+function renderEnhPreview() {
+  cancelAnimationFrame(enhRaf);
+  enhRaf = requestAnimationFrame(() => {
+    const out = enhanced(ed.prev, enhValues());
+    enhCanvas.width = out.width; enhCanvas.height = out.height;
+    enhCanvas.getContext('2d').drawImage(out, 0, 0);
+  });
+}
+Object.values(enhIds).forEach(id => $(id).addEventListener('input', renderEnhPreview));
+$('#enh-auto').addEventListener('click', () => { setEnhValues(AUTO_ENH); renderEnhPreview(); });
+$('#enh-orig').addEventListener('click', () => { setEnhValues({}); renderEnhPreview(); });
+$('#enh-back').addEventListener('click', () => showPanel('crop'));
+$('#enh-ok').addEventListener('click', () => cropDone && cropDone(enhanced(ed.base, enhValues())));
+
+$('#crop-next').addEventListener('click', () => goEnhance(true));
+$('#crop-skip').addEventListener('click', () => goEnhance(false));
 $('#crop-close').addEventListener('click', () => cropDone && cropDone(null));
 cropDlg.addEventListener('cancel', e => { e.preventDefault(); cropDone && cropDone(null); });
-$('#rot-l').addEventListener('click', () => { cropState.rot = (cropState.rot + 270) % 360; cropState.crop = { ...CROP_DEFAULT }; drawWork(); updateBox(); });
-$('#rot-r').addEventListener('click', () => { cropState.rot = (cropState.rot + 90) % 360; cropState.crop = { ...CROP_DEFAULT }; drawWork(); updateBox(); });
-$('#crop-angle').addEventListener('input', e => { cropState.angle = +e.target.value; drawWork(); });
+function rotate(dir) {
+  ed.rot = (ed.rot + (dir > 0 ? 90 : 270)) % 360;
+  // ruoto anche gli angoli, così non si perdono
+  const moved = ed.quad.map(p => dir > 0 ? { x: 1 - p.y, y: p.x } : { x: p.y, y: 1 - p.x });
+  ed.quad = orderQuad(moved);
+  drawWork(); updateQuad();
+}
+$('#rot-l').addEventListener('click', () => rotate(-1));
+$('#rot-r').addEventListener('click', () => rotate(1));
 $('#crop-auto').addEventListener('click', () => {
-  const r = detectBookRect();
-  if (r) { cropState.crop = r; updateBox(); } else toast('Non riesco a trovare i bordi: trascina gli angoli a mano');
+  const q = autoQuad();
+  if (q) { ed.quad = q; updateQuad(); } else toast('Non riesco a trovare i bordi: trascina gli angoli a mano');
 });
 
 let drag = null;
 $('#crop-stage').addEventListener('pointerdown', e => {
-  const t = e.target;
-  const mode = t.dataset && t.dataset.h ? t.dataset.h : (t === cropBox ? 'move' : null);
-  if (!mode) return;
-  drag = { mode, sx: e.clientX, sy: e.clientY, start: { ...cropState.crop }, r: cropCanvas.getBoundingClientRect() };
+  const i = e.target.dataset && e.target.dataset.c;
+  if (i === undefined) return;
+  drag = { i: +i, r: cropCanvas.getBoundingClientRect() };
   e.currentTarget.setPointerCapture(e.pointerId);
   e.preventDefault();
 });
 $('#crop-stage').addEventListener('pointermove', e => {
   if (!drag) return;
-  const dx = (e.clientX - drag.sx) / drag.r.width, dy = (e.clientY - drag.sy) / drag.r.height;
-  const s = drag.start, MIN = 0.1;
-  let { x0, y0, x1, y1 } = s;
-  const cl = (v) => Math.min(1, Math.max(0, v));
-  if (drag.mode === 'move') {
-    const w = s.x1 - s.x0, h = s.y1 - s.y0;
-    x0 = Math.min(1 - w, Math.max(0, s.x0 + dx)); y0 = Math.min(1 - h, Math.max(0, s.y0 + dy));
-    x1 = x0 + w; y1 = y0 + h;
-  } else {
-    if (drag.mode.includes('w')) x0 = Math.min(cl(s.x0 + dx), s.x1 - MIN);
-    if (drag.mode.includes('e')) x1 = Math.max(cl(s.x1 + dx), s.x0 + MIN);
-    if (drag.mode.includes('n')) y0 = Math.min(cl(s.y0 + dy), s.y1 - MIN);
-    if (drag.mode.includes('s')) y1 = Math.max(cl(s.y1 + dy), s.y0 + MIN);
-  }
-  cropState.crop = { x0, y0, x1, y1 };
-  updateBox();
+  ed.quad[drag.i] = {
+    x: Math.min(1, Math.max(0, (e.clientX - drag.r.left) / drag.r.width)),
+    y: Math.min(1, Math.max(0, (e.clientY - drag.r.top) / drag.r.height))
+  };
+  updateQuad();
 });
 ['pointerup', 'pointercancel'].forEach(ev => $('#crop-stage').addEventListener(ev, () => { drag = null; }));
 
