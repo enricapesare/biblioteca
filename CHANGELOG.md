@@ -4,6 +4,13 @@ Formato basato su [Keep a Changelog](https://keepachangelog.com/it/1.1.0/), vers
 
 ## [Non rilasciato]
 
+## [1.5.0] - 2026-11-07
+### Aggiunto
+- Correzione della prospettiva: quattro angoli trascinabili (rilevati in automatico) per raddrizzare le foto scattate di sbieco o ruotate.
+- Miglioramento della luce con anteprima: ombre, riflessi, contrasto e nitidezza, con preset Automatico e Originale. La foto migliorata è usata anche per la lettura del testo.
+### Modificato
+- Il cursore "Raddrizza" è sostituito dai quattro angoli.
+
 ## [1.4.0] - 2026-11-07
 ### Aggiunto
 - Dopo lo scatto della copertina si apre un editor per ruotare di 90°, raddrizzare, ritagliare i bordi del libro (con rilevamento automatico) e usare la foto ritagliata per l'immagine e per la lettura del testo.

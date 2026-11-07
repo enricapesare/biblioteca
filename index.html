@@ -232,31 +232,55 @@
   </div>
 </dialog>
 
-<!-- RITAGLIO FOTO -->
+<!-- RITAGLIO E MIGLIORAMENTO FOTO -->
 <dialog id="dlg-crop">
   <div class="dlg-head">
-    <h2>Ruota e ritaglia</h2>
+    <h2 id="crop-title">Ruota e ritaglia</h2>
     <button type="button" class="icon-btn" id="crop-close" aria-label="Annulla">
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>
-  <div class="crop-wrap">
-    <div class="crop-stage" id="crop-stage">
-      <canvas id="crop-canvas" width="10" height="10"></canvas>
-      <div id="crop-box"><i data-h="nw"></i><i data-h="ne"></i><i data-h="sw"></i><i data-h="se"></i></div>
+
+  <div id="panel-crop">
+    <div class="crop-wrap">
+      <div class="crop-stage" id="crop-stage">
+        <canvas id="crop-canvas" width="10" height="10"></canvas>
+        <svg class="crop-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <path id="crop-mask" fill="rgba(0,0,0,.55)" fill-rule="evenodd" d="M0 0H100V100H0Z"/>
+          <polygon id="crop-poly" points="5,5 95,5 95,95 5,95" fill="none" stroke="#fff" stroke-width="0.6" vector-effect="non-scaling-stroke"/>
+        </svg>
+        <i data-c="0"></i><i data-c="1"></i><i data-c="2"></i><i data-c="3"></i>
+      </div>
+    </div>
+    <p class="hint">Porta i quattro angoli sugli angoli del libro: anche se la foto è di sbieco, la copertina viene raddrizzata.</p>
+    <div class="crop-tools">
+      <button type="button" class="btn" id="rot-l">Ruota a sinistra</button>
+      <button type="button" class="btn" id="rot-r">Ruota a destra</button>
+      <button type="button" class="btn" id="crop-auto">Rileva gli angoli</button>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="btn primary" id="crop-next">Avanti</button>
+      <button type="button" class="btn" id="crop-skip">Usa la foto intera</button>
     </div>
   </div>
-  <p class="hint">Trascina gli angoli per tenere solo la copertina.</p>
-  <div class="crop-tools">
-    <button type="button" class="btn" id="rot-l">Ruota a sinistra</button>
-    <button type="button" class="btn" id="rot-r">Ruota a destra</button>
-    <button type="button" class="btn" id="crop-auto">Rileva i bordi</button>
-  </div>
-  <label for="crop-angle">Raddrizza</label>
-  <input type="range" id="crop-angle" min="-15" max="15" step="0.5" value="0">
-  <div class="dlg-actions">
-    <button type="button" class="btn primary" id="crop-ok">Usa questa foto</button>
-    <button type="button" class="btn" id="crop-skip">Usa la foto intera</button>
+
+  <div id="panel-enh" hidden>
+    <div class="crop-wrap"><canvas id="enh-canvas" width="10" height="10"></canvas></div>
+    <div class="enh-grid">
+      <label for="enh-shadow">Ombre</label><input type="range" id="enh-shadow" min="0" max="100" value="50">
+      <label for="enh-glare">Riflessi</label><input type="range" id="enh-glare" min="0" max="100" value="30">
+      <label for="enh-contrast">Contrasto</label><input type="range" id="enh-contrast" min="0" max="100" value="30">
+      <label for="enh-sharp">Nitidezza</label><input type="range" id="enh-sharp" min="0" max="100" value="30">
+    </div>
+    <div class="crop-tools">
+      <button type="button" class="btn" id="enh-auto">Automatico</button>
+      <button type="button" class="btn" id="enh-orig">Originale</button>
+    </div>
+    <p class="hint">Illuminazione, riflessi e contrasto si possono attenuare, non recuperare del tutto. Pieghe, graffi e macchie restano.</p>
+    <div class="dlg-actions">
+      <button type="button" class="btn primary" id="enh-ok">Usa questa foto</button>
+      <button type="button" class="btn" id="enh-back">Indietro</button>
+    </div>
   </div>
 </dialog>
 
