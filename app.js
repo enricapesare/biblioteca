@@ -122,14 +122,33 @@ async function fetchJson(url) {
   } finally { clearTimeout(t); }
 }
 
+function errText(e) {
+  if (e && e.name === 'AbortError') return 'tempo scaduto';
+  return (e && e.message) || 'errore di rete';
+}
+
+/** Cerca i dettagli per ISBN. Restituisce { book, errors }: errors elenca le fonti che non hanno risposto. */
 async function lookupIsbn(isbn) {
-  // 1) Google Books
-  try {
-    const d = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=isbn:${isbn}&maxResults=1&langRestrict=`);
-    if (d.items && d.items.length) return mapGoogle(d.items[0], isbn);
-  } catch (e) { /* passa alla fonte successiva */ }
-  // 2) Open Library
-  try {
+  const errors = [];
+  const attempt = async (label, fn) => {
+    try { return await fn(); } catch (e) { errors.push(`${label}: ${errText(e)}`); return null; }
+  };
+
+  // 1) Google Books: prima con isbn:, poi come testo libero (accetto solo risultati con lo stesso ISBN)
+  let book = await attempt('Google Books', async () => {
+    for (const q of ['isbn:' + isbn, isbn]) {
+      const d = await fetchJson(`https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=5`);
+      const items = d.items || [];
+      const same = items.find(v => ((v.volumeInfo || {}).industryIdentifiers || []).some(i => i.identifier === isbn || (i.type === 'ISBN_10' && isbn10to13(i.identifier) === isbn)));
+      if (same) return mapGoogle(same, isbn);
+      if (q.startsWith('isbn:') && items.length === 1) return mapGoogle(items[0], isbn);
+    }
+    return null;
+  });
+  if (book) return { book, errors };
+
+  // 2) Open Library: API libri, poi ricerca
+  book = await attempt('Open Library', async () => {
     const d = await fetchJson(`https://openlibrary.org/api/books?bibkeys=ISBN:${isbn}&format=json&jscmd=data`);
     const b = d['ISBN:' + isbn];
     if (b) {
@@ -145,8 +164,22 @@ async function lookupIsbn(isbn) {
         cover: (b.cover && (b.cover.medium || b.cover.small)) || ''
       };
     }
-  } catch (e) { /* nessun risultato */ }
-  return null;
+    const s = await fetchJson(`https://openlibrary.org/search.json?isbn=${isbn}&limit=1&fields=title,subtitle,author_name,publisher,first_publish_year,number_of_pages_median,cover_i,subject`);
+    const x = (s.docs || [])[0];
+    if (!x) return null;
+    return {
+      isbn,
+      title: [x.title, x.subtitle].filter(Boolean).join(': '),
+      authors: x.author_name || [],
+      publisher: (x.publisher || [])[0] || '',
+      year: x.first_publish_year || '',
+      pages: x.number_of_pages_median || '',
+      categories: (x.subject || []).slice(0, 3),
+      description: '',
+      cover: x.cover_i ? `https://covers.openlibrary.org/b/id/${x.cover_i}-M.jpg` : ''
+    };
+  });
+  return { book, errors };
 }
 
 async function searchTitle(q) {
@@ -408,12 +441,15 @@ function newBook(data) {
 
 async function handleIsbn(isbn) {
   setMsg('Cerco i dettagli…');
-  const found = await lookupIsbn(isbn);
-  if (found) { setMsg('Libro trovato'); openBook(newBook(found), true); }
-  else {
-    setMsg('Nessun dettaglio trovato: compila a mano');
-    openBook(newBook({ isbn }), true);
-  }
+  const { book, errors } = await lookupIsbn(isbn);
+  if (book) { setMsg('Libro trovato'); openBook(newBook(book), true); return; }
+  const note = errors.length
+    ? 'Servizio non raggiungibile (' + errors.join('; ') + '). Controlla la connessione, oppure compila a mano.'
+    : 'ISBN ' + isbn + ' non presente nelle banche dati: compila a mano.';
+  setMsg(errors.length ? 'Servizio non raggiungibile' : 'ISBN non trovato');
+  openBook(newBook({ isbn }), true);
+  const ban = $('#dup-banner');
+  ban.textContent = note; ban.hidden = false;
 }
 
 $('#form-isbn').addEventListener('submit', e => {
