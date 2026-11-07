@@ -4,6 +4,11 @@ Formato basato su [Keep a Changelog](https://keepachangelog.com/it/1.1.0/), vers
 
 ## [Non rilasciato]
 
+## [1.3.0] - 2026-11-07
+### Aggiunto
+- Foto della copertina: diventa l'immagine del libro e il testo viene letto sul telefono (OCR) per proporre titolo e autore; le righe lette si possono assegnare a titolo o autore con un tocco.
+- Le foto sono salvate nel telefono (IndexedDB) e incluse nei backup JSON.
+
 ## [1.2.1] - 2026-11-07
 ### Corretto
 - Collane: alla scansione di una nuova uscita non vengono più riportati titolo e autori dell'uscita precedente, ma solo collana, editore e generi.

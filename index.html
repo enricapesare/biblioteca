@@ -129,6 +129,15 @@
       </button>
     </div>
     <p class="banner" id="dup-banner" hidden></p>
+    <div class="cover-tools">
+      <input type="file" id="f-photo" accept="image/*" capture="environment" hidden>
+      <button type="button" class="btn" id="btn-photo">Fotografa la copertina</button>
+      <p class="hint" id="ocr-status" role="status" aria-live="polite"></p>
+    </div>
+    <details id="ocr-box" hidden open>
+      <summary>Testo letto dalla copertina</summary>
+      <ul class="ocr" id="ocr-lines"></ul>
+    </details>
     <div class="book-top">
       <img id="f-cover-img" alt="" hidden>
       <div class="grow">
