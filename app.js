@@ -1,7 +1,7 @@
 'use strict';
 
 /* ---------- Archivio locale ---------- */
-const APP_VERSION = '1.0.1';      // aggiornata da scripts/release.sh
+const APP_VERSION = '1.1.0';      // aggiornata da scripts/release.sh
 const KEY = 'biblioteca.v1';      // chiave dei dati: NON cambiarla mai (la compatibilità passa dalle migrazioni)
 const META_KEY = 'biblioteca.meta';
 let books = [];
