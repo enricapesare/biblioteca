@@ -33,3 +33,15 @@ Versioni: PATCH per correzioni (1.0.1), MINOR per nuove funzioni compatibili (1.
 2. Nel progetto: `git remote add origin https://github.com/<utente>/biblioteca.git` poi `git push -u origin main --tags`.
 3. Su GitHub: Settings → Pages → Source: **GitHub Actions**.
 4. Dopo circa un minuto l'app è su `https://<utente>.github.io/biblioteca/`.
+
+## Chiave API Google Books (consigliata)
+
+Le ricerche anonime su Google Books vengono limitate (errore 429). Con una chiave gratuita il problema sparisce.
+
+1. Vai su console.cloud.google.com, crea un progetto (es. "biblioteca").
+2. Menu API e servizi → Libreria → cerca "Books API" → Abilita.
+3. API e servizi → Credenziali → Crea credenziali → Chiave API.
+4. Modifica la chiave: in "Restrizioni delle applicazioni" scegli "Siti web" e aggiungi `https://TUONOME.github.io/*`; in "Restrizioni API" scegli solo Books API.
+5. Nell'app apri il menu in alto a destra e incolla la chiave nel campo dedicato.
+
+La chiave resta salvata sul telefono, non nel codice né nei backup.
